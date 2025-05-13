@@ -1,0 +1,560 @@
+Imports System.Reflection
+Imports System.Runtime.InteropServices
+Imports System.Windows.Forms
+Imports DPUruNet
+Imports DPUruNet.Constants
+
+Imports System.Data.SQLite
+Imports System.Environment
+Imports System.Drawing
+Imports System.Threading
+
+
+
+
+<Guid("12345678-ABCD-1234-ABCD-1234567890AB")> ' Unique ID for the control
+<ComVisible(True)> ' Make the control COM visible
+Public Class MyControl
+    Inherits System.Windows.Forms.UserControl
+
+
+
+    Enum CaptureType
+        ForLogin
+        ForDaftar
+    End Enum
+
+    Private WithEvents ReaderFP As New Reader()
+    Private _Data As String
+    Public Event FPCaptured As EventHandler
+    'Public Event FPCaptured(ByVal sender As Object, ByVal e As EventArgs)
+    Private index As Boolean = False
+    Private dbPath As String
+    Private dbConnectionString As String
+    Private databaseExists As Boolean = False
+    Private userName As String
+    Private fpDataSerialized As String
+    Private fpData As Fmd
+    Private authenticated As Boolean = False
+    Private _captureType As CaptureType = CaptureType.ForLogin
+    Private Const DPFJ_PROBABILITY_ONE As Integer = &H7FFFFFFF
+
+    Public Property IsAuthenticated As Boolean
+        Get
+            Return authenticated
+        End Get
+        Set(value As Boolean)
+            authenticated = value
+        End Set
+    End Property
+
+    Public Property Data As String
+        Get
+            Return _Data
+        End Get
+        Set(value As String)
+            _Data = value
+        End Set
+    End Property
+
+    Public Sub New()
+        InitializeComponent()
+        Dim readers = ReaderCollection.GetReaders()
+        If readers.Count > 0 Then
+            ReaderFP = readers(0)
+            Dim openRes = ReaderFP.Open(CapturePriority.DP_PRIORITY_COOPERATIVE)
+            If openRes <> ResultCode.DP_SUCCESS Then
+                Me.InformLabel.Text = "Cannot open reader"
+            End If
+            Try
+                ' Start async fingerprint capture
+                GetStatus()
+                Dim result = ReaderFP.CaptureAsync(Formats.Fid.ANSI, CaptureProcessing.DP_IMG_PROC_DEFAULT, ReaderFP.Capabilities.Resolutions(0))
+                If result <> ResultCode.DP_SUCCESS Then
+                    Me.InformLabel.Text = "Can't start async capture"
+                End If
+            Catch ex As Exception
+                Me.InformLabel.Text = ex.ToString()
+            End Try
+        Else
+            Me.InformLabel.Text = "Reader not ready"
+        End If
+
+        dbPath = ".\database.db"
+        If IO.File.Exists(dbPath) Then
+            databaseExists = True
+        Else
+            databaseExists = False
+            SQLiteConnection.CreateFile(dbPath)
+        End If
+        dbConnectionString = "Data Source=" + dbPath + ";Version=3;"
+
+        Using connection As New SQLiteConnection(dbConnectionString)
+                connection.Open()
+
+                ' Create Users table
+                Dim createTableQuery As String = "CREATE TABLE IF NOT EXISTS Users (Name TEXT, FP_ID TEXT)"
+                Using command As New SQLiteCommand(createTableQuery, connection)
+                    command.ExecuteNonQuery()
+                End Using
+
+                ' Create Admin table
+                createTableQuery = "CREATE TABLE IF NOT EXISTS Admin (Name TEXT, Password TEXT)"
+                Using command As New SQLiteCommand(createTableQuery, connection)
+                    command.ExecuteNonQuery()
+                End Using
+
+            ' Insert default admin only if it doesn't exist
+            Dim insertQuery As String = "INSERT INTO Admin (Name, Password) SELECT @Name, @Password WHERE NOT EXISTS ( SELECT 1 FROM Admin WHERE Name = @Name)"
+            Using command As New SQLiteCommand(insertQuery, connection)
+                command.Parameters.AddWithValue("@Name", "Admin")
+                command.Parameters.AddWithValue("@Password", "1234")
+                command.ExecuteNonQuery()
+            End Using
+        End Using
+
+
+    End Sub
+
+
+    Private Sub tabPanelChanged() Handles TabControl1.SelectedIndexChanged
+        userName = ""
+        fpDataSerialized = ""
+        If TabControl1.SelectedIndex = 0 Then
+            _captureType = CaptureType.ForLogin
+        ElseIf TabControl1.SelectedIndex = 1 Then
+            _captureType = CaptureType.ForDaftar
+
+        End If
+    End Sub
+
+
+    Private Function InsertUser(name As String, id As String) As Boolean
+        Dim rowAffected As Integer
+        If databaseExists Then
+            Using conn As New SQLiteConnection(dbConnectionString)
+                conn.Open()
+                Dim insertQuery As String = "INSERT INTO Users (Name, FP_ID) VALUES (@Name, @FP_ID)"
+                Using command As New SQLiteCommand(insertQuery, conn)
+                    command.Parameters.AddWithValue("@Name", name)
+                    command.Parameters.AddWithValue("@FP_ID", id)
+                    rowAffected = command.ExecuteNonQuery()
+                End Using
+            End Using
+        End If
+        Return rowAffected
+    End Function
+
+    Private Function GetAdmin(name As String, password As String) As Boolean
+        Dim success As Boolean = False
+        Try
+            Using conn As New SQLiteConnection(dbConnectionString)
+                conn.Open()
+                Dim query = "SELECT * FROM Admin"
+                Using command As New SQLiteCommand(query, conn)
+                    Using reader As SQLiteDataReader = command.ExecuteReader()
+                        While reader.Read()
+                            Dim uname = reader("Name").ToString()
+                            Dim pw = reader("Password").ToString()
+                            If name = uname And password = pw Then
+                                success = True
+                                Exit While
+                            End If
+                        End While
+                    End Using
+                End Using
+            End Using
+        Catch ex As Exception
+            Throw New Exception(ex.ToString())
+        End Try
+        Return success
+    End Function
+    Private Function GetUser(fmd As Fmd) As Boolean
+        Dim success As Boolean = False
+        Try
+
+
+            Using conn As New SQLiteConnection(dbConnectionString)
+                conn.Open()
+                Dim getQuery As String = "SELECT * FROM Users"
+                Using command As New SQLiteCommand(getQuery, conn)
+                    Using reader As SQLiteDataReader = command.ExecuteReader()
+                        While reader.Read()
+                            Dim xml = reader("FP_ID").ToString()
+                            Dim curr_fmd As DataResult(Of Fmd) = FeatureExtraction.CreateFmdFromFid(Fid.DeserializeXml(xml), Formats.Fmd.ANSI)
+                            Dim thresholdScore As Integer = DPFJ_PROBABILITY_ONE * 1 / 100000
+                            Dim fmds(0) As Fmd
+                            fmds(0) = curr_fmd.Data
+                            Dim identifyResult = Comparison.Identify(fmd, 0, fmds, thresholdScore, 1)
+                            If identifyResult.ResultCode <> ResultCode.DP_SUCCESS Then
+                                Me.InformLabel.Text = "gagal"
+                            End If
+                            If identifyResult.Indexes.Length <> 0 Then
+                                userName = reader("Name").ToString()
+                                success = True
+                                Me.InformLabel.Text = userName
+                                Exit While
+                            End If
+                            success = False
+                        End While
+                    End Using
+                End Using
+            End Using
+        Catch ex As Exception
+            Throw New Exception(ex.ToString())
+        End Try
+
+
+        Return success
+    End Function
+
+    Public Sub GetStatus()
+        Dim result = ReaderFP.GetStatus()
+
+        If (result <> ResultCode.DP_SUCCESS) Then
+            If ReaderFP IsNot Nothing Then
+                Me.InformLabel.Text = ("" & result.ToString())
+            End If
+        End If
+
+        If (ReaderFP.Status.Status = ReaderStatuses.DP_STATUS_BUSY) Then
+            Thread.Sleep(50)
+        ElseIf (ReaderFP.Status.Status = ReaderStatuses.DP_STATUS_NEED_CALIBRATION) Then
+            ReaderFP.Calibrate()
+        ElseIf (ReaderFP.Status.Status <> ReaderStatuses.DP_STATUS_READY) Then
+            Me.InformLabel.Text = ("Reader Status - " & ReaderFP.Status.Status.ToString())
+        End If
+    End Sub
+    Public Sub closeReader()
+        ReaderFP.Dispose()
+    End Sub
+
+    Public Function CheckCaptureResult(ByVal captureResult As CaptureResult) As Boolean
+        If captureResult.Data Is Nothing Or captureResult.ResultCode <> Constants.ResultCode.DP_SUCCESS Then
+            If captureResult.ResultCode <> Constants.ResultCode.DP_SUCCESS Then
+                Throw New Exception("" & captureResult.ResultCode.ToString())
+            End If
+
+            If captureResult.Quality <> Constants.CaptureQuality.DP_QUALITY_CANCELED Then
+                Throw New Exception("Quality - " + captureResult.Quality.ToString())
+            End If
+            Return False
+        End If
+        Return True
+    End Function
+
+    ' Handle the captured fingerprint data
+    Private Sub OnCaptured(result As CaptureResult) Handles ReaderFP.On_Captured
+        If Not CheckCaptureResult(result) Then Return
+        index = Not index
+        If authenticated = False Then
+            fpDataSerialized = Fid.SerializeXml(result.Data)  ' Convert fingerprint data to XML format
+            If _captureType = CaptureType.ForLogin Then
+                Dim fmd As DataResult(Of Fmd) = FeatureExtraction.CreateFmdFromFid(result.Data, Formats.Fmd.ANSI)
+                Dim res = GetUser(fmd.Data)
+                If res Then
+                    _Data = userName
+                    Me.InformLabel.Text = "Hallo " + userName
+                    Me.Invoke(Sub() RaiseEvent FPCaptured(Me, New EventArgs))
+                Else
+                    Me.Invoke(Sub() Me.InformLabel.Text = "FingerPrint tidak terdaftar")
+                End If
+            ElseIf _captureType = CaptureType.ForDaftar Then
+                Me.InformLabelCaptured.Text = "Captured"
+            End If
+
+        End If
+    End Sub
+
+
+    ' Initialize UI Components
+    Private Sub InitializeComponent()
+        Me.InformLabel = New System.Windows.Forms.Label()
+        Me.BackButton = New System.Windows.Forms.Button()
+        Me.InsertUserButton = New System.Windows.Forms.Button()
+        Me.InformLabelCaptured = New System.Windows.Forms.Label()
+        Me.NameTextBox = New System.Windows.Forms.TextBox()
+        Me.Label2 = New System.Windows.Forms.Label()
+        Me.ButtonDaftar = New System.Windows.Forms.Button()
+        Me.TabControl1 = New System.Windows.Forms.TabControl()
+        Me.TabPage1 = New System.Windows.Forms.TabPage()
+        Me.TabPage2 = New System.Windows.Forms.TabPage()
+        Me.TableLayoutPanel1 = New System.Windows.Forms.TableLayoutPanel()
+        Me.AdminPasswordText = New System.Windows.Forms.TextBox()
+        Me.Label4 = New System.Windows.Forms.Label()
+        Me.AdminUserNameText = New System.Windows.Forms.TextBox()
+        Me.Label3 = New System.Windows.Forms.Label()
+        Me.TabControl1.SuspendLayout()
+        Me.TabPage1.SuspendLayout()
+        Me.TabPage2.SuspendLayout()
+        Me.TableLayoutPanel1.SuspendLayout()
+        Me.SuspendLayout()
+        '
+        'InformLabel
+        '
+        Me.InformLabel.AutoSize = True
+        Me.InformLabel.Font = New System.Drawing.Font("Microsoft Sans Serif", 21.75!, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, CType(0, Byte))
+        Me.InformLabel.Location = New System.Drawing.Point(216, 77)
+        Me.InformLabel.Name = "InformLabel"
+        Me.InformLabel.Size = New System.Drawing.Size(374, 42)
+        Me.InformLabel.TabIndex = 2
+        Me.InformLabel.Text = "Tempelkan Sidik Jari!"
+        '
+        'BackButton
+        '
+        Me.BackButton.Anchor = CType((((System.Windows.Forms.AnchorStyles.Top Or System.Windows.Forms.AnchorStyles.Bottom) _
+            Or System.Windows.Forms.AnchorStyles.Left) _
+            Or System.Windows.Forms.AnchorStyles.Right), System.Windows.Forms.AnchorStyles)
+        Me.BackButton.BackColor = System.Drawing.Color.FromArgb(CType(CType(255, Byte), Integer), CType(CType(160, Byte), Integer), CType(CType(160, Byte), Integer))
+        Me.BackButton.FlatAppearance.BorderColor = System.Drawing.Color.Black
+        Me.BackButton.FlatStyle = System.Windows.Forms.FlatStyle.Flat
+        Me.BackButton.Font = New System.Drawing.Font("Microsoft Sans Serif", 14.25!, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, CType(0, Byte))
+        Me.BackButton.ForeColor = System.Drawing.Color.FromArgb(CType(CType(240, Byte), Integer), CType(CType(240, Byte), Integer), CType(CType(240, Byte), Integer))
+        Me.BackButton.Location = New System.Drawing.Point(379, 349)
+        Me.BackButton.Name = "BackButton"
+        Me.BackButton.Size = New System.Drawing.Size(155, 44)
+        Me.BackButton.TabIndex = 4
+        Me.BackButton.Text = "Kembali"
+        Me.BackButton.UseVisualStyleBackColor = False
+        '
+        'InsertUserButton
+        '
+        Me.InsertUserButton.Anchor = CType((((System.Windows.Forms.AnchorStyles.Top Or System.Windows.Forms.AnchorStyles.Bottom) _
+            Or System.Windows.Forms.AnchorStyles.Left) _
+            Or System.Windows.Forms.AnchorStyles.Right), System.Windows.Forms.AnchorStyles)
+        Me.InsertUserButton.BackColor = System.Drawing.Color.FromArgb(CType(CType(255, Byte), Integer), CType(CType(160, Byte), Integer), CType(CType(160, Byte), Integer))
+        Me.InsertUserButton.FlatAppearance.BorderColor = System.Drawing.Color.Black
+        Me.InsertUserButton.FlatStyle = System.Windows.Forms.FlatStyle.Flat
+        Me.InsertUserButton.Font = New System.Drawing.Font("Microsoft Sans Serif", 14.25!, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, CType(0, Byte))
+        Me.InsertUserButton.ForeColor = System.Drawing.Color.FromArgb(CType(CType(240, Byte), Integer), CType(CType(240, Byte), Integer), CType(CType(240, Byte), Integer))
+        Me.InsertUserButton.Location = New System.Drawing.Point(554, 349)
+        Me.InsertUserButton.Name = "InsertUserButton"
+        Me.InsertUserButton.Size = New System.Drawing.Size(150, 44)
+        Me.InsertUserButton.TabIndex = 3
+        Me.InsertUserButton.Text = "Daftar"
+        Me.InsertUserButton.UseVisualStyleBackColor = False
+        '
+        'InformLabelCaptured
+        '
+        Me.InformLabelCaptured.AutoSize = True
+        Me.InformLabelCaptured.Font = New System.Drawing.Font("Microsoft Sans Serif", 18.0!, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, CType(0, Byte))
+        Me.InformLabelCaptured.ForeColor = System.Drawing.Color.Red
+        Me.InformLabelCaptured.Location = New System.Drawing.Point(310, 27)
+        Me.InformLabelCaptured.Name = "InformLabelCaptured"
+        Me.InformLabelCaptured.Size = New System.Drawing.Size(224, 36)
+        Me.InformLabelCaptured.TabIndex = 2
+        Me.InformLabelCaptured.Text = "Tempelkan Jari!"
+        '
+        'NameTextBox
+        '
+        Me.NameTextBox.BorderStyle = System.Windows.Forms.BorderStyle.FixedSingle
+        Me.NameTextBox.Font = New System.Drawing.Font("Microsoft Sans Serif", 20.25!, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, CType(0, Byte))
+        Me.NameTextBox.Location = New System.Drawing.Point(217, 3)
+        Me.NameTextBox.Name = "NameTextBox"
+        Me.NameTextBox.Size = New System.Drawing.Size(442, 46)
+        Me.NameTextBox.TabIndex = 1
+        '
+        'Label2
+        '
+        Me.Label2.AutoSize = True
+        Me.Label2.Font = New System.Drawing.Font("Microsoft Sans Serif", 15.75!, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, CType(0, Byte))
+        Me.Label2.Location = New System.Drawing.Point(3, 0)
+        Me.Label2.Name = "Label2"
+        Me.Label2.Size = New System.Drawing.Size(101, 31)
+        Me.Label2.TabIndex = 0
+        Me.Label2.Text = "Name :"
+        '
+        'ButtonDaftar
+        '
+        Me.ButtonDaftar.BackColor = System.Drawing.Color.FromArgb(CType(CType(255, Byte), Integer), CType(CType(160, Byte), Integer), CType(CType(160, Byte), Integer))
+        Me.ButtonDaftar.FlatAppearance.BorderColor = System.Drawing.Color.Black
+        Me.ButtonDaftar.FlatStyle = System.Windows.Forms.FlatStyle.Flat
+        Me.ButtonDaftar.Font = New System.Drawing.Font("Microsoft Sans Serif", 14.25!)
+        Me.ButtonDaftar.ForeColor = System.Drawing.Color.FromArgb(CType(CType(240, Byte), Integer), CType(CType(240, Byte), Integer), CType(CType(240, Byte), Integer))
+        Me.ButtonDaftar.Location = New System.Drawing.Point(317, 259)
+        Me.ButtonDaftar.Name = "ButtonDaftar"
+        Me.ButtonDaftar.Size = New System.Drawing.Size(157, 56)
+        Me.ButtonDaftar.TabIndex = 3
+        Me.ButtonDaftar.Text = "Daftar"
+        Me.ButtonDaftar.UseVisualStyleBackColor = False
+        '
+        'TabControl1
+        '
+        Me.TabControl1.Anchor = CType((((System.Windows.Forms.AnchorStyles.Top Or System.Windows.Forms.AnchorStyles.Bottom) _
+            Or System.Windows.Forms.AnchorStyles.Left) _
+            Or System.Windows.Forms.AnchorStyles.Right), System.Windows.Forms.AnchorStyles)
+        Me.TabControl1.Controls.Add(Me.TabPage1)
+        Me.TabControl1.Controls.Add(Me.TabPage2)
+        Me.TabControl1.Font = New System.Drawing.Font("Microsoft Sans Serif", 8.25!, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, CType(0, Byte))
+        Me.TabControl1.Location = New System.Drawing.Point(0, 0)
+        Me.TabControl1.Name = "TabControl1"
+        Me.TabControl1.SelectedIndex = 0
+        Me.TabControl1.Size = New System.Drawing.Size(797, 461)
+        Me.TabControl1.TabIndex = 5
+        '
+        'TabPage1
+        '
+        Me.TabPage1.BackColor = System.Drawing.Color.FromArgb(CType(CType(177, Byte), Integer), CType(CType(176, Byte), Integer), CType(CType(167, Byte), Integer))
+        Me.TabPage1.Controls.Add(Me.ButtonDaftar)
+        Me.TabPage1.Controls.Add(Me.InformLabel)
+        Me.TabPage1.Location = New System.Drawing.Point(4, 26)
+        Me.TabPage1.Name = "TabPage1"
+        Me.TabPage1.Padding = New System.Windows.Forms.Padding(3)
+        Me.TabPage1.Size = New System.Drawing.Size(789, 431)
+        Me.TabPage1.TabIndex = 0
+        Me.TabPage1.Text = "Login"
+        '
+        'TabPage2
+        '
+        Me.TabPage2.BackColor = System.Drawing.Color.FromArgb(CType(CType(177, Byte), Integer), CType(CType(176, Byte), Integer), CType(CType(167, Byte), Integer))
+        Me.TabPage2.Controls.Add(Me.TableLayoutPanel1)
+        Me.TabPage2.Controls.Add(Me.BackButton)
+        Me.TabPage2.Controls.Add(Me.InsertUserButton)
+        Me.TabPage2.Controls.Add(Me.InformLabelCaptured)
+        Me.TabPage2.Location = New System.Drawing.Point(4, 26)
+        Me.TabPage2.Name = "TabPage2"
+        Me.TabPage2.Padding = New System.Windows.Forms.Padding(3)
+        Me.TabPage2.Size = New System.Drawing.Size(789, 431)
+        Me.TabPage2.TabIndex = 1
+        Me.TabPage2.Text = "Daftar"
+        '
+        'TableLayoutPanel1
+        '
+        Me.TableLayoutPanel1.Anchor = CType((((System.Windows.Forms.AnchorStyles.Top Or System.Windows.Forms.AnchorStyles.Bottom) _
+            Or System.Windows.Forms.AnchorStyles.Left) _
+            Or System.Windows.Forms.AnchorStyles.Right), System.Windows.Forms.AnchorStyles)
+        Me.TableLayoutPanel1.ColumnCount = 2
+        Me.TableLayoutPanel1.ColumnStyles.Add(New System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 30.86233!))
+        Me.TableLayoutPanel1.ColumnStyles.Add(New System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 69.13767!))
+        Me.TableLayoutPanel1.Controls.Add(Me.AdminPasswordText, 1, 2)
+        Me.TableLayoutPanel1.Controls.Add(Me.Label4, 0, 2)
+        Me.TableLayoutPanel1.Controls.Add(Me.AdminUserNameText, 1, 1)
+        Me.TableLayoutPanel1.Controls.Add(Me.Label2, 0, 0)
+        Me.TableLayoutPanel1.Controls.Add(Me.Label3, 0, 1)
+        Me.TableLayoutPanel1.Controls.Add(Me.NameTextBox, 1, 0)
+        Me.TableLayoutPanel1.Location = New System.Drawing.Point(27, 82)
+        Me.TableLayoutPanel1.Name = "TableLayoutPanel1"
+        Me.TableLayoutPanel1.RowCount = 3
+        Me.TableLayoutPanel1.RowStyles.Add(New System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 50.44248!))
+        Me.TableLayoutPanel1.RowStyles.Add(New System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 49.55752!))
+        Me.TableLayoutPanel1.RowStyles.Add(New System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Absolute, 70.0!))
+        Me.TableLayoutPanel1.Size = New System.Drawing.Size(694, 221)
+        Me.TableLayoutPanel1.TabIndex = 6
+        '
+        'AdminPasswordText
+        '
+        Me.AdminPasswordText.BorderStyle = System.Windows.Forms.BorderStyle.FixedSingle
+        Me.AdminPasswordText.Font = New System.Drawing.Font("Microsoft Sans Serif", 20.25!, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, CType(0, Byte))
+        Me.AdminPasswordText.Location = New System.Drawing.Point(217, 153)
+        Me.AdminPasswordText.Name = "AdminPasswordText"
+        Me.AdminPasswordText.Size = New System.Drawing.Size(442, 46)
+        Me.AdminPasswordText.TabIndex = 9
+        '
+        'Label4
+        '
+        Me.Label4.AutoSize = True
+        Me.Label4.Font = New System.Drawing.Font("Microsoft Sans Serif", 16.25!)
+        Me.Label4.Location = New System.Drawing.Point(3, 150)
+        Me.Label4.Name = "Label4"
+        Me.Label4.Size = New System.Drawing.Size(153, 64)
+        Me.Label4.TabIndex = 8
+        Me.Label4.Text = "Admin Password :"
+        '
+        'AdminUserNameText
+        '
+        Me.AdminUserNameText.BorderStyle = System.Windows.Forms.BorderStyle.FixedSingle
+        Me.AdminUserNameText.Font = New System.Drawing.Font("Microsoft Sans Serif", 20.25!, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, CType(0, Byte))
+        Me.AdminUserNameText.Location = New System.Drawing.Point(217, 79)
+        Me.AdminUserNameText.Name = "AdminUserNameText"
+        Me.AdminUserNameText.Size = New System.Drawing.Size(442, 46)
+        Me.AdminUserNameText.TabIndex = 7
+        '
+        'Label3
+        '
+        Me.Label3.AutoSize = True
+        Me.Label3.Font = New System.Drawing.Font("Microsoft Sans Serif", 16.25!)
+        Me.Label3.Location = New System.Drawing.Point(3, 76)
+        Me.Label3.Name = "Label3"
+        Me.Label3.Size = New System.Drawing.Size(159, 64)
+        Me.Label3.TabIndex = 5
+        Me.Label3.Text = "Admin Username :"
+        '
+        'MyControl
+        '
+        Me.Controls.Add(Me.TabControl1)
+        Me.Name = "MyControl"
+        Me.Size = New System.Drawing.Size(797, 464)
+        Me.TabControl1.ResumeLayout(False)
+        Me.TabPage1.ResumeLayout(False)
+        Me.TabPage1.PerformLayout()
+        Me.TabPage2.ResumeLayout(False)
+        Me.TabPage2.PerformLayout()
+        Me.TableLayoutPanel1.ResumeLayout(False)
+        Me.TableLayoutPanel1.PerformLayout()
+        Me.ResumeLayout(False)
+
+    End Sub
+    Protected Overrides Sub Dispose(disposing As Boolean)
+        If disposing Then
+            ' Dispose managed resources here
+            If ReaderFP IsNot Nothing Then
+                ReaderFP.Dispose()
+            End If
+        End If
+
+        ' Dispose unmanaged resources here (if any)
+
+        ' Call the base class Dispose method
+        MyBase.Dispose(disposing)
+    End Sub
+    Friend WithEvents InformLabel As Label
+    Friend WithEvents ButtonDaftar As Button
+    Friend WithEvents NameTextBox As TextBox
+    Friend WithEvents Label2 As Label
+    Friend WithEvents InsertUserButton As Button
+    Friend WithEvents InformLabelCaptured As Label
+    Friend WithEvents BackButton As Button
+
+    Private Sub InsertUserButton_Click(sender As Object, e As EventArgs) Handles InsertUserButton.Click
+        If fpDataSerialized.Length = 0 Then
+            Me.InformLabelCaptured.Text = "Tempelkan sidik jari"
+            Return
+        End If
+        If Me.NameTextBox.Text.Length = 0 Or Me.AdminUserNameText.Text.Length = 0 Or Me.AdminPasswordText.Text.Length = 0 Then
+            Me.InformLabelCaptured.Text = "Isi form yang kosong"
+            Return
+        End If
+        Dim adminRes = GetAdmin(Me.AdminUserNameText.Text, Me.AdminPasswordText.Text)
+        If Not adminRes Then
+            Me.InformLabelCaptured.Text = "Admin salah"
+            Return
+        End If
+        Dim res = InsertUser(Me.NameTextBox.Text, fpDataSerialized)
+        If res Then
+            Me.InformLabel.Text = "daftar berhasil"
+        Else
+            Me.InformLabel.Text = "gagal"
+
+        End If
+        Me.TabControl1.SelectedIndex = 0
+    End Sub
+    Private Sub ButtonDaftar_Click(sender As Object, e As EventArgs) Handles ButtonDaftar.Click
+        Me.TabControl1.SelectedIndex = 1
+    End Sub
+
+
+
+    Private Sub BackButton_Click(sender As Object, e As EventArgs) Handles BackButton.Click
+        Me.TabControl1.SelectedIndex = 0
+
+    End Sub
+
+    Friend WithEvents TabControl1 As TabControl
+    Friend WithEvents TabPage1 As TabPage
+    Friend WithEvents TabPage2 As TabPage
+    Friend WithEvents Label3 As Label
+    Friend WithEvents TableLayoutPanel1 As TableLayoutPanel
+    Friend WithEvents AdminPasswordText As TextBox
+    Friend WithEvents Label4 As Label
+    Friend WithEvents AdminUserNameText As TextBox
+End Class
