@@ -1,0 +1,111 @@
+Imports System.Data.SQLite
+Imports System.Runtime.InteropServices
+Imports System.Windows.Forms
+Imports System.Windows.Forms.VisualStyles.VisualStyleElement
+Imports DPUruNet
+
+
+Public Class ManageUserPage
+    Public Event BackPage()
+
+    Public dbHandler_ As DatabaseHandler
+    Private opened_ As Boolean = False
+    Private adminVerified As Boolean = False
+
+    Public Sub ShowPage()
+        Me.Show()
+        opened_ = True
+    End Sub
+    Public Sub HidePage()
+        Me.Hide()
+        opened_ = False
+    End Sub
+
+    Private Sub Page_Load(sender As Object, e As EventArgs) Handles Me.Load
+        UserListView.View = View.Details
+        UserListView.FullRowSelect = True
+        UserListView.Columns.Add("Name", 50)
+        UserListView.Columns.Add("Role", 100)
+        LoadUser()
+    End Sub
+    Private Sub Clear() Handles Me.BackPage
+        Me.OldAdminNameTextBox.ResetText()
+        Me.OldAdminPasswordTextBox.ResetText()
+        Me.NewAdminNameTextBox.ResetText()
+        Me.NewAdminPasswordTextBox.ResetText()
+        Me.AdminNameTextBox.Text = ""
+        Me.AdminPasswordTextBox.Text = ""
+        adminVerified = False
+        Me.InformLabel.Text = "Admin not verified"
+        Me.TabControl1.SelectedIndex = 0
+    End Sub
+    Private Sub OtherTabSelected(sender As Object, e As TabControlCancelEventArgs) Handles TabControl1.Selecting
+        If Not adminVerified AndAlso TabControl1.SelectedTab IsNot AdminVerifTab Then
+            e.Cancel = True
+        ElseIf adminVerified AndAlso e.TabPage Is AdminVerifTab Then
+            e.Cancel = True
+        End If
+    End Sub
+
+
+    Private Sub LoadUser()
+        UserListView.Items.Clear()
+
+        Using reader As SQLiteDataReader = dbHandler_.GetAllUser()
+            While reader.Read()
+                Dim item As New ListViewItem(reader("Name").ToString)
+                item.SubItems.Add(reader("Role").ToString)
+                UserListView.Items.Add(item)
+            End While
+        End Using
+
+
+    End Sub
+
+    Private Sub RemoveButton_Click(sender As Object, e As EventArgs) Handles RemoveButton.Click
+        If UserListView.SelectedItems.Count = 0 Then
+            MessageBox.Show("Please select a user to remove.")
+            Return
+        End If
+        Dim name As String = UserListView.SelectedItems(0).Text
+        dbHandler_.RemoveUser(name)
+        LoadUser()
+
+    End Sub
+
+    Private Sub UpdateAdmin_Click(sender As Object, e As EventArgs) Handles UpdateAdmin.Click
+        Dim adminRes = dbHandler_.GetAdmin(Me.OldAdminNameTextBox.Text, Me.OldAdminPasswordTextBox.Text)
+        If Not adminRes Then
+            MessageBox.Show("Wrong Name/Password.")
+            Return
+        End If
+
+        Dim res = dbHandler_.UpdateAdmin(Me.OldAdminNameTextBox.Text, Me.NewAdminNameTextBox.Text, Me.NewAdminPasswordTextBox.Text)
+        If res Then
+            MessageBox.Show("Success.")
+            Me.OldAdminNameTextBox.Text = ""
+            Me.OldAdminPasswordTextBox.Text = ""
+            Me.NewAdminNameTextBox.Text = ""
+            Me.NewAdminPasswordTextBox.Text = ""
+            Return
+        End If
+        MessageBox.Show("Failed.")
+    End Sub
+
+    Private Sub BackButton_Click(sender As Object, e As EventArgs) Handles BackButton.Click, BackButton1.Click, BackButton2.Click
+        RaiseEvent BackPage()
+    End Sub
+
+    Private Sub VerifyButton_Click(sender As Object, e As EventArgs) Handles VerifyButton.Click
+        Dim adminRes = dbHandler_.GetAdmin(Me.AdminNameTextBox.Text, Me.AdminPasswordTextBox.Text)
+        If Not adminRes Then
+            Me.InformLabel.Text = "Admin not verified"
+            Return
+        End If
+        Me.InformLabel.Text = "Admin verified"
+        Me.adminVerified = True
+        Me.TabControl1.SelectedIndex = 1
+
+
+    End Sub
+End Class
