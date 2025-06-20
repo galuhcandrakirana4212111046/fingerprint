@@ -1,0 +1,71 @@
+Imports System.Data.SqlClient
+Imports System.Data.SQLite
+Imports System.Runtime.InteropServices
+Imports System.Text.RegularExpressions
+Imports DPUruNet
+Imports DPUruNet.Constants
+
+<Guid("12345678-ABCD-1234-ABCD-1234567222AB")> ' Unique ID for the control
+<ComVisible(True)> ' Make the control COM visible
+Public Class LoginPage
+    Public Event DaftarClicked As EventHandler
+    Public Event ManageClicked As EventHandler
+    Public Event Authenticated(ByVal name As String, ByVal role As String)
+    Public WithEvents fcHandler As FingerCaptureHandler
+    Public dbHandler As DatabaseHandler
+    Private opened_ As Boolean = False
+    Private Sub LoginPage_Load(sender As Object, e As EventArgs) Handles MyBase.Load
+
+    End Sub
+
+    Private Sub ButtonDaftar_Click(sender As Object, e As EventArgs) Handles ButtonDaftar.Click
+        Me.Invoke(Sub() RaiseEvent DaftarClicked(Me, New EventArgs))
+    End Sub
+    Public Sub ShowPage()
+        Me.Show()
+        opened_ = True
+    End Sub
+    Public Sub HidePage()
+        Me.Hide()
+        opened_ = False
+    End Sub
+
+    Public Sub ShowMessage(msg As String)
+        Me.MessageLabel.Text = msg
+    End Sub
+
+    Public Sub newCaptured(cl As Collection) Handles fcHandler.DataCaptured
+        If Not opened_ Then
+            Return
+        End If
+        If cl.Count <> 3 Then
+            Me.Invoke(Sub() ShowMessage("Invalid Data"))
+            Return
+        End If
+        System.Diagnostics.Debug.WriteLine(cl.Count)
+
+        If cl(1) = False Then
+            ShowMessage(cl(2))
+            Return
+        End If
+
+        Using reader As SQLiteDataReader = dbHandler.GetAllUser()
+            While reader.Read()
+                Dim fp_str As String = reader("FP_ID").ToString
+                Dim device_fmd As DataResult(Of Fmd) = cl(2)
+                If fcHandler.CompareFP(device_fmd.Data, fp_str) Then
+                    Me.Invoke(Sub() Me.InformLabel.Text = "Hallo " & reader("name"))
+                    Me.Invoke(Sub() RaiseEvent Authenticated(reader("Name"), reader("Role")))
+                    Return
+                End If
+            End While
+            Me.Invoke(Sub() Me.InformLabel.Text = "Sidik jari tidak terdaftar")
+
+        End Using
+    End Sub
+
+    Private Sub ButtonManage_Click(sender As Object, e As EventArgs) Handles ButtonManage.Click
+        Me.Invoke(Sub() RaiseEvent ManageClicked(Me, New EventArgs))
+
+    End Sub
+End Class
