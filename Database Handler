@@ -1,0 +1,123 @@
+Imports System.Data.SQLite
+
+Public Class DatabaseHandler
+    Private DatabaseExist As Boolean = False
+    Private dbConnectionString As String
+    Public Sub New()
+        Dim db_path As String = ".\database.db"
+        If IO.File.Exists(db_path) Then
+            DatabaseExist = True
+        Else
+            DatabaseExist = False
+            SQLiteConnection.CreateFile(db_path)
+        End If
+
+        dbConnectionString = "Data Source=" + db_path + ";Version=3;"
+        Using connection As New SQLiteConnection(dbConnectionString)
+            connection.Open()
+
+            ' Create Users table
+            Dim createTableQuery As String = "CREATE TABLE IF NOT EXISTS Users (Name TEXT, Role TEXT, FP_ID TEXT)"
+            Using command As New SQLiteCommand(createTableQuery, connection)
+                command.ExecuteNonQuery()
+            End Using
+
+            ' Create Admin table
+            createTableQuery = "CREATE TABLE IF NOT EXISTS Admin (Name TEXT, Password TEXT)"
+            Using command As New SQLiteCommand(createTableQuery, connection)
+                command.ExecuteNonQuery()
+            End Using
+
+            ' Insert default admin only if it doesn't exist
+            Dim insertQuery As String = "INSERT INTO Admin (Name, Password) SELECT @Name, @Password WHERE NOT EXISTS ( SELECT 1 FROM Admin)"
+            Using command As New SQLiteCommand(insertQuery, connection)
+                command.Parameters.AddWithValue("@Name", "Admin")
+                command.Parameters.AddWithValue("@Password", "1234")
+                command.ExecuteNonQuery()
+            End Using
+        End Using
+
+    End Sub
+
+    Public Function InsertUser(name As String, role As String, id As String) As Boolean
+        Dim rowAffected As Integer
+        If DatabaseExist Then
+            Using conn As New SQLiteConnection(dbConnectionString)
+                conn.Open()
+                Dim insertQuery As String = "INSERT INTO Users (Name, Role, FP_ID) VALUES (@Name, @Role, @FP_ID)"
+                Using command As New SQLiteCommand(insertQuery, conn)
+                    command.Parameters.AddWithValue("@Name", name)
+                    command.Parameters.AddWithValue("@Role", role)
+                    command.Parameters.AddWithValue("@FP_ID", id)
+                    rowAffected = command.ExecuteNonQuery()
+                End Using
+            End Using
+        End If
+        Return rowAffected
+    End Function
+
+    Public Function GetAdmin(name As String, password As String) As Boolean
+        Dim success As Boolean = False
+        Try
+            Using conn As New SQLiteConnection(dbConnectionString)
+                conn.Open()
+                Dim query = "SELECT * FROM Admin"
+                Using command As New SQLiteCommand(query, conn)
+                    Using reader As SQLiteDataReader = command.ExecuteReader()
+                        While reader.Read()
+                            Dim uname = reader("Name").ToString()
+                            Dim pw = reader("Password").ToString()
+                            If name = uname And password = pw Then
+                                success = True
+                                Exit While
+                            End If
+                        End While
+                    End Using
+                End Using
+            End Using
+        Catch ex As Exception
+            Throw New Exception(ex.ToString())
+        End Try
+        Return success
+    End Function
+
+    Public Function UpdateAdmin(ByVal oldName, ByVal name, ByVal password) As Boolean
+        Using conn As New SQLiteConnection(dbConnectionString)
+            conn.Open()
+            Dim query As String = "UPDATE Admin SET Name = @Name, Password = @Password WHERE Name = @OldName"
+            Using cmd As New SQLiteCommand(query, conn)
+                cmd.Parameters.AddWithValue("@Name", name)
+                cmd.Parameters.AddWithValue("@Password", password)
+                cmd.Parameters.AddWithValue("@OldName", oldName)
+                Return cmd.ExecuteNonQuery() > 0
+            End Using
+        End Using
+    End Function
+
+    Public Function GetAllUser() As SQLiteDataReader
+        Try
+
+
+            Dim conn As New SQLiteConnection(dbConnectionString)
+            conn.Open()
+            Dim getQuery As String = "SELECT * FROM Users"
+            Dim command As New SQLiteCommand(getQuery, conn)
+
+            Return command.ExecuteReader()
+        Catch ex As Exception
+            Throw New Exception(ex.ToString())
+        End Try
+
+    End Function
+
+    Public Sub RemoveUser(ByVal name)
+        Using conn As New SQLiteConnection(dbConnectionString)
+            conn.Open()
+            Dim query As String = "DELETE FROM Users WHERE Name = @Name"
+            Using cmd As New SQLiteCommand(query, conn)
+                cmd.Parameters.AddWithValue("@Name", name)
+                cmd.ExecuteNonQuery()
+            End Using
+        End Using
+    End Sub
+End Class
