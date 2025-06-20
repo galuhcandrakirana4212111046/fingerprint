@@ -1,0 +1,82 @@
+
+Public Class RegisterPage
+    Public Event BackPage()
+    Public Event RegisterSuccessed(ByVal success As Boolean)
+    Public WithEvents fcHandler As FingerCaptureHandler
+    Public dbHandler As DatabaseHandler
+    Private fpDataSerialized As String = ""
+    Private opened_ As Boolean
+
+    Private Sub RegisterPage_Load(sender As Object, e As EventArgs) Handles MyBase.Load
+
+    End Sub
+    Public Sub ShowPage()
+        Me.Show()
+        opened_ = True
+    End Sub
+    Public Sub HidePage()
+        Me.Hide()
+        opened_ = False
+    End Sub
+
+    Private Sub Clear() Handles Me.BackPage
+        Me.AdminNameTextBox.ResetText()
+        Me.AdminPasswordTextBox.ResetText()
+        Me.NameTextBox.ResetText()
+        Me.RoleComboBox.ResetText()
+    End Sub
+
+    Private Sub RegisterUserButton_Click(sender As Object, e As EventArgs) Handles RegisterUserButton.Click
+        If fpDataSerialized.Length = 0 Then
+            Me.InformLabelCaptured.Text = "Tempelkan sidik jari"
+            Return
+        End If
+        If Me.NameTextBox.Text.Length = 0 Or Me.AdminNameTextBox.Text.Length = 0 Or Me.AdminPasswordTextBox.Text.Length = 0 Then
+            Me.InformLabelCaptured.Text = "Isi form yang kosong"
+            Return
+        End If
+        Dim adminRes = dbHandler.GetAdmin(Me.AdminNameTextBox.Text, Me.AdminPasswordTextBox.Text)
+        If Not adminRes Then
+            Me.InformLabelCaptured.Text = "Admin salah"
+            Return
+        End If
+        System.Diagnostics.Debug.WriteLine(Me.NameTextBox.Text, Me.RoleComboBox.SelectedItem.ToString())
+        Dim res = dbHandler.InsertUser(Me.NameTextBox.Text, Me.RoleComboBox.SelectedItem.ToString(), fpDataSerialized)
+        If res Then
+            RaiseEvent RegisterSuccessed(True)
+        Else
+            RaiseEvent RegisterSuccessed(False)
+        End If
+    End Sub
+
+    Private Sub BackButton_Click(sender As Object, e As EventArgs) Handles BackButton.Click
+        RaiseEvent BackPage()
+    End Sub
+
+    Private Sub ShowMessage(ByVal msg As String)
+        InformLabelCaptured.Text = msg
+    End Sub
+
+    Public Sub newCaptured(cl As Collection) Handles fcHandler.DataCaptured
+        If Not opened_ Then
+            Return
+        End If
+
+        If cl.Count <> 3 Then
+            ShowMessage("Invalid Data")
+            Return
+        End If
+
+        If cl(1) = False Then
+            ShowMessage(cl(2))
+            Return
+        End If
+
+        fpDataSerialized = cl(3)
+        Me.Invoke(Sub() ShowMessage("Captured"))
+
+
+
+
+    End Sub
+End Class
